@@ -1,0 +1,7 @@
+sherpa-onnx
+sherpa-onnx-bin
+numpy
+sounddevice
+librosa
+pyttsx3
+pywin32

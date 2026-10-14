@@ -1,0 +1,15 @@
+build/
+cmake-build-*/
+models/
+third_party/miniaudio.h
+.gradle/
+android/.gradle/
+android/local.properties
+*.so
+*.dll
+*.dylib
+*.onnx
+.venv/
+__pycache__/
+*.py[cod]
+settings.json
