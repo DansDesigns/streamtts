@@ -124,7 +124,7 @@ metadata is included in the ZIP; each voice model is downloaded from the officia
 sherpa-onnx `tts-models` release when first selected, so the project download stays
 small. All downloaded voices are cached locally for offline use.
 
-### Graphical settings app (updated in v0.1.4)
+### Graphical settings app (v0.1.4 and later)
 
 Launch the Tkinter GUI with `run_windows_gui.bat` after setup. Re-run `setup_windows.bat` after updating so it installs the OS-voice packages (`pyttsx3` and `pywin32`). It includes a live
 text area, a test-voice button, voice selection, speech-rate control (0.5×–2.0×),
@@ -165,6 +165,24 @@ same incremental chunking policy but is not the compiled C ABI wrapper in
 Dependencies installed into the local virtual environment are `sherpa-onnx`,
 `sherpa-onnx-bin`, `numpy`, `sounddevice`, `librosa` (optional pitch shift), and `pyttsx3`/`pywin32` (system voices).
 No Rust is installed or used.
+
+### Update checker (v0.1.5)
+
+The GUI checks for updates at startup and has an **Updates** section with
+**Check now**, **Download ZIP**, and **GitHub** controls. The check runs in a
+background thread, so it does not block typing or speech. It fetches the plain
+text version from:
+
+- `https://raw.githubusercontent.com/dansdesigns/streamtts/main/version.txt`
+- If the `main` path returns 404, it also tries the `master` branch.
+
+**Repository-owner setup:** publish a root-level `version.txt` in the repository
+with only the version on its first line (for example, `0.1.5`). The `version.txt`
+file is intentionally **not included** in this application ZIP. The app compares
+that remote version with the local `VERSION` file. If GitHub has a newer version,
+**Download ZIP** opens the current branch's source archive in the browser; this
+checker does not replace running files automatically. Back up `settings.json`
+and `models/` before manually replacing an existing installation.
 
 ## C++ API example
 

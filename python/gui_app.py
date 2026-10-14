@@ -9,6 +9,7 @@ import shutil
 import tarfile
 import threading
 import time
+import webbrowser
 from pathlib import Path
 from urllib.request import urlopen
 import tkinter as tk
@@ -27,6 +28,10 @@ from system_voice import SystemVoiceTTS  # noqa: E402
 # Curated built-in catalog of official sherpa-onnx Piper/VITS profiles.
 # Catalog metadata ships with StreamTTS; large ONNX archives download on first use.
 from voice_catalog import VOICE_CATALOG  # noqa: E402
+from updater import (  # noqa: E402
+    DOWNLOAD_URL_TEMPLATE, REPOSITORY_URL, UpdateCheckError,
+    fetch_latest_version, is_newer_version, read_current_version,
+)
 VOICE_RELEASE_BASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models"
 SYSTEM_PREFIX = "system::"
 MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,140}$")
@@ -128,8 +133,8 @@ class StreamTTSGui:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("StreamTTS — Live Speech Settings")
-        self.root.geometry("1000x700")
-        self.root.minsize(820, 580)
+        self.root.geometry("1000x760")
+        self.root.minsize(820, 650)
         self.settings = read_settings()
         self.tts: StreamingTTS | None = None
         self._reconfiguring = False
@@ -160,6 +165,12 @@ class StreamTTSGui:
         self.status_var = tk.StringVar(value="Starting…")
         self.rate_readout = tk.StringVar()
         self.pitch_readout = tk.StringVar()
+        self.current_version = read_current_version()
+        self.latest_version: str | None = None
+        self.latest_branch = "main"
+        self._update_checking = False
+        self.current_version_var = tk.StringVar(value=f"Installed version: v{self.current_version}")
+        self.update_status_var = tk.StringVar(value="Not checked yet")
 
         self._build_ui()
         self._refresh_voice_choices()
@@ -169,6 +180,8 @@ class StreamTTSGui:
         self.root.protocol("WM_DELETE_WINDOW", self.close_window)
         self.root.after(100, self._poll_events)
         self._load_initial_voice()
+        # Update check runs on a background thread and never blocks speech/UI.
+        self.root.after(1200, self.check_for_updates)
 
     def _build_ui(self) -> None:
         try:
@@ -236,9 +249,56 @@ class StreamTTSGui:
         ttk.Button(buttons, text="Clear text", command=self.clear_text).pack(side="left", padx=(8, 0))
         ttk.Label(typing, text="Completed words stream at spaces and punctuation. Previously spoken text cannot be taken back.", foreground="#666666", wraplength=560).grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
+        update_frame = ttk.LabelFrame(outer, text="Updates", padding=(10, 7))
+        update_frame.pack(fill="x", pady=(10, 0))
+        update_frame.columnconfigure(1, weight=1)
+        ttk.Label(update_frame, textvariable=self.current_version_var).grid(row=0, column=0, sticky="w", padx=(0, 12))
+        ttk.Label(update_frame, textvariable=self.update_status_var, wraplength=400).grid(row=0, column=1, sticky="ew", padx=(0, 10))
+        update_buttons = ttk.Frame(update_frame)
+        update_buttons.grid(row=0, column=2, sticky="e")
+        self.check_update_button = ttk.Button(update_buttons, text="Check now", command=self.check_for_updates)
+        self.check_update_button.pack(side="left")
+        self.download_update_button = ttk.Button(update_buttons, text="Download ZIP", command=self.open_latest_download, state="disabled")
+        self.download_update_button.pack(side="left", padx=(5, 0))
+        ttk.Button(update_buttons, text="GitHub", command=self.open_repository).pack(side="left", padx=(5, 0))
+
         footer = ttk.Frame(outer)
-        footer.pack(fill="x", pady=(10, 0))
+        footer.pack(fill="x", pady=(7, 0))
         ttk.Label(footer, textvariable=self.status_var, wraplength=850).pack(side="left", fill="x", expand=True)
+
+    def check_for_updates(self) -> None:
+        """Check GitHub version.txt asynchronously, keeping the GUI responsive."""
+        if self._closing or self._update_checking:
+            return
+        self._update_checking = True
+        self.check_update_button.configure(state="disabled")
+        self.download_update_button.configure(state="disabled")
+        self.update_status_var.set("Checking GitHub…")
+
+        def worker() -> None:
+            try:
+                latest, branch = fetch_latest_version()
+                self._ui_events.put(("update_check_done", latest, branch))
+            except Exception as exc:
+                self._ui_events.put(("update_check_failed", str(exc)))
+
+        threading.Thread(target=worker, name="StreamTTSUpdateCheck", daemon=True).start()
+
+    def open_repository(self) -> None:
+        try:
+            webbrowser.open(REPOSITORY_URL, new=2)
+        except Exception as exc:
+            self.update_status_var.set(f"Could not open GitHub: {exc}")
+
+    def open_latest_download(self) -> None:
+        if not self.latest_version:
+            return
+        url = DOWNLOAD_URL_TEMPLATE.format(branch=self.latest_branch)
+        try:
+            webbrowser.open(url, new=2)
+            self.update_status_var.set("Opened the latest source ZIP in your browser. Back up settings.json and models before replacing files.")
+        except Exception as exc:
+            self.update_status_var.set(f"Could not open the download: {exc}")
 
     def _discover_system_voices(self) -> dict[str, dict[str, str]]:
         """Return system voice IDs and names without failing the whole GUI."""
@@ -612,6 +672,33 @@ class StreamTTSGui:
                 kind = event[0]
                 if kind == "status":
                     self.status_var.set(event[1])
+                elif kind == "update_check_done":
+                    _, latest, branch = event
+                    self._update_checking = False
+                    self.check_update_button.configure(state="normal")
+                    self.latest_version = latest
+                    self.latest_branch = branch
+                    try:
+                        if is_newer_version(latest, self.current_version):
+                            self.update_status_var.set(f"Update available: v{latest}")
+                            self.download_update_button.configure(state="normal")
+                        elif is_newer_version(self.current_version, latest):
+                            self.update_status_var.set(f"Installed v{self.current_version} is newer than GitHub v{latest}.")
+                            self.download_update_button.configure(state="disabled")
+                        else:
+                            self.update_status_var.set(f"You're up to date (v{latest}).")
+                            self.download_update_button.configure(state="disabled")
+                    except ValueError as exc:
+                        self.latest_version = None
+                        self.update_status_var.set(f"Invalid version returned by GitHub: {exc}")
+                        self.download_update_button.configure(state="disabled")
+                elif kind == "update_check_failed":
+                    _, detail = event
+                    self._update_checking = False
+                    self.check_update_button.configure(state="normal")
+                    self.latest_version = None
+                    self.download_update_button.configure(state="disabled")
+                    self.update_status_var.set(f"Update check failed — {detail}")
                 elif kind == "voice_ready":
                     _, model_id, _model_dir, new_tts = event
                     if self._closing:
